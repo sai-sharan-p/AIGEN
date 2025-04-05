@@ -3,12 +3,18 @@ load_dotenv()
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-
+from typing import List, Dict, Any, Optional
 import streamlit as st
 import os
 import google.generativeai as genai
 import pandas as pd
-import uuid  # Import the uuid module
+from functools import lru_cache
+import logging
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- Configuration and Prompts ---
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -94,64 +100,149 @@ You are a helpful and expert data analysis assistant. You will receive the COMPL
         Answer:
 """
 
-# --- Utility Functions ---
+# Constants
+SUPPORTED_FILE_TYPES = {"csv", "xlsx", "xls"}
+DEFAULT_POWERBI_HEIGHT = 600
+MIN_POWERBI_HEIGHT = 300
+MAX_POWERBI_HEIGHT = 1000
+BOLD_KEYWORDS = ["Sales", "Customer churn rate", "region", "Implication", "customers", "support"]
 
-def get_dataframe_txt(data_files):
-    """Extracts text from pandas DataFrames (CSV/Excel)."""
-    all_data_text = ""
+# --- Utility Functions ---
+@st.cache_data
+def get_dataframe_txt(data_files: List[Any]) -> str:
+    """
+    Extracts text from pandas DataFrames (CSV/Excel) with caching.
+    
+    Args:
+        data_files: List of uploaded files
+        
+    Returns:
+        str: Concatenated text representation of all dataframes
+    """
+    all_data_text = []
     for file in data_files:
         try:
-            file_extension = file.name.split(".")[-1].lower()
-            if file_extension == "csv":
-                df = pd.read_csv(file)
-            elif file_extension in ("xlsx", "xls"):
-                df = pd.read_excel(file)
-            else:
+            file_extension = Path(file.name).suffix.lower()[1:]
+            if file_extension not in SUPPORTED_FILE_TYPES:
                 st.warning(f"Unsupported file type: {file.name}. Only CSV/Excel.")
                 continue
-            all_data_text += df.to_string() + "\n\n"
+                
+            df = pd.read_csv(file) if file_extension == "csv" else pd.read_excel(file)
+            all_data_text.append(df.to_string())
+            
         except Exception as e:
+            logger.error(f"Error processing file {file.name}: {e}")
             st.error(f"Error processing file {file.name}: {e}")
             continue
-    return all_data_text
+            
+    return "\n\n".join(all_data_text)
 
-def get_conversational_chain(prompt_template):
-    """Creates a Langchain conversational chain."""
+@st.cache_resource
+def get_conversational_chain(prompt_template: str) -> LLMChain:
+    """
+    Creates a cached Langchain conversational chain.
+    
+    Args:
+        prompt_template: The prompt template to use
+        
+    Returns:
+        LLMChain: The configured chain
+    """
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.5, streaming=True)
-    llm_chain = LLMChain(llm=model, prompt=prompt)
-    return llm_chain
+    return LLMChain(llm=model, prompt=prompt)
 
-
-def generate_insights(data):
-    """Generates insights using the INSIGHTS_PROMPT."""
+@st.cache_resource
+def get_insights_chain() -> LLMChain:
+    """
+    Creates a cached insights generation chain.
+    
+    Returns:
+        LLMChain: The configured chain
+    """
     prompt = PromptTemplate(template=INSIGHTS_PROMPT, input_variables=["context"])
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.3, streaming=False)  # Lower temp
-    llm_chain = LLMChain(llm=model, prompt=prompt)
-    response = llm_chain({"context": data}, return_only_outputs=True)
-    return response["text"]
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.3, streaming=False)
+    return LLMChain(llm=model, prompt=prompt)
 
-def user_input(user_question, chain, data_string):
-    """Handles user input, displays a "processing" message, and then the response."""
+def generate_insights(data: str) -> str:
+    """
+    Generates insights using the INSIGHTS_PROMPT.
+    
+    Args:
+        data: The data to analyze
+        
+    Returns:
+        str: Generated insights
+    """
     try:
-        # Display a processing message *before* making the API call.
-        with st.spinner("Generating response..."):  # Use st.spinner for a nice animation
-            response = chain(
-                {"context": data_string, "question": user_question},
-            )
+        chain = get_insights_chain()
+        response = chain({"context": data}, return_only_outputs=True)
+        return response["text"]
+    except Exception as e:
+        logger.error(f"Error generating insights: {e}")
+        st.error("Failed to generate insights. Please try again.")
+        return ""
 
+def format_insights_text(insights_text: str, height: int) -> str:
+    """
+    Formats insights text with HTML styling.
+    
+    Args:
+        insights_text: The insights text to format
+        height: The container height
+        
+    Returns:
+        str: Formatted HTML
+    """
+    # Add spacing and bolding
+    insights_text = insights_text.replace("\r\n", "<br><br>").replace("\n", "<br><br>")
+    
+    # Bold key terms
+    for word in BOLD_KEYWORDS:
+        insights_text = insights_text.replace(word, f"**{word}**")
+    
+    return f"""
+    <div style='
+        height: {height}px;
+        overflow-y: auto;
+        border: 1px solid #e0e0e0;
+        padding: 10px;
+        border-radius: 5px;
+        white-space: pre-wrap;
+    '>
+        {insights_text}
+    </div>
+    """
+
+def user_input(user_question: str, chain: LLMChain, data_string: str) -> None:
+    """
+    Handles user input and generates response.
+    
+    Args:
+        user_question: The user's question
+        chain: The LLM chain to use
+        data_string: The data context
+    """
+    try:
+        with st.spinner("Generating response..."):
+            response = chain({"context": data_string, "question": user_question})
+            
         st.session_state.messages.append({"role": "user", "content": user_question})
         st.session_state.messages.append({"role": "assistant", "content": response["text"]})
-
+        
     except Exception as e:
-        st.error(f"An error occurred during chat: {e}")
-        st.write("Please check the input and try again.")
+        logger.error(f"Error in chat: {e}")
+        st.error("An error occurred during chat. Please try again.")
 
-# --- Main Streamlit App ---
+def initialize_session_state() -> None:
+    """Initialize session state variables."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "powerbi_height" not in st.session_state:
+        st.session_state.powerbi_height = DEFAULT_POWERBI_HEIGHT
 
-def main():
-    st.set_page_config(page_title="Data Analytics Assistant", layout="wide")
-
+def render_header() -> None:
+    """Render the fixed header."""
     st.markdown(
         """
         <style>
@@ -160,9 +251,9 @@ def main():
             top: 0;
             left: 0;
             width: 100%;
-            background-color: #f0f2f6; /* Or any color you like */
+            background-color: #f0f2f6;
             padding: 2px 0;
-            z-index: 1000; /* Ensure it's above other content */
+            z-index: 1000;
             text-align: center;
         }
         </style>
@@ -173,71 +264,107 @@ def main():
         unsafe_allow_html=True
     )
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "powerbi_height" not in st.session_state:
-        st.session_state.powerbi_height = 600
-
+def render_sidebar() -> tuple:
+    """
+    Render the sidebar and return uploaded files and Power BI URL.
+    
+    Returns:
+        tuple: (uploaded_files, power_bi_url)
+    """
     with st.sidebar:
         st.title("Menu:")
-        uploaded_files = st.file_uploader("Upload Excel/CSV", type=["csv", "xlsx", "xls"], accept_multiple_files=True)
+        uploaded_files = st.file_uploader(
+            "Upload Excel/CSV",
+            type=list(SUPPORTED_FILE_TYPES),
+            accept_multiple_files=True
+        )
         process_button = st.button("Submit & Process")
         power_bi_url = st.text_input("Enter Power BI Embedded URL", "")
-        st.session_state.powerbi_height = st.slider("Dashboard Height", 300, 1000, st.session_state.powerbi_height, 50)
+        st.session_state.powerbi_height = st.slider(
+            "Dashboard Height",
+            MIN_POWERBI_HEIGHT,
+            MAX_POWERBI_HEIGHT,
+            st.session_state.powerbi_height,
+            50
+        )
+    return uploaded_files, power_bi_url, process_button
 
+def render_dashboard(power_bi_url: str) -> None:
+    """
+    Render the Power BI dashboard.
+    
+    Args:
+        power_bi_url: The Power BI URL to embed
+    """
+    st.subheader("Power BI Dashboard")
+    if power_bi_url:
+        st.components.v1.iframe(
+            power_bi_url,
+            height=st.session_state.powerbi_height,
+            scrolling=True
+        )
+    else:
+        st.info("Please enter a Power BI Embedded URL in the sidebar.")
+
+def render_insights() -> None:
+    """Render the insights section."""
+    st.subheader("Insights:")
+    if "insights" in st.session_state:
+        insights_html = format_insights_text(
+            st.session_state.insights,
+            st.session_state.powerbi_height
+        )
+        st.markdown(insights_html, unsafe_allow_html=True)
+    else:
+        st.info("Upload data and click 'Submit & Process'.")
+
+def render_chat(uploaded_files: List[Any]) -> None:
+    """
+    Render the chat interface.
+    
+    Args:
+        uploaded_files: List of uploaded files
+    """
+    st.subheader("Chat with your Data")
+    chat_chain = get_conversational_chain(CHAT_PROMPT)
+    
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            
+    if prompt := st.chat_input("Ask a question:", key="chat_input"):
+        if not uploaded_files:
+            st.warning("Please upload files first.")
+        else:
+            user_input(prompt, chat_chain, get_dataframe_txt(uploaded_files))
+            st.rerun()
+
+def main() -> None:
+    """Main application entry point."""
+    st.set_page_config(page_title="Data Analytics Assistant", layout="wide")
+    
+    initialize_session_state()
+    render_header()
+    
+    uploaded_files, power_bi_url, process_button = render_sidebar()
+    
+    # Main content area
     top_container = st.container()
     with top_container:
         col1, col2 = st.columns([0.7, 0.3])
-
+        
         with col1:
-            st.subheader("Power BI Dashboard")
-            if power_bi_url:
-                st.components.v1.iframe(power_bi_url, height=st.session_state.powerbi_height, scrolling=True)
-            else:
-                st.info("Please enter a Power BI Embedded URL in the sidebar.")
-
+            render_dashboard(power_bi_url)
+            
         with col2:
-            st.subheader("Insights:")
-            if "insights" in st.session_state:
-                # --- Add spacing and bolding ---
-                insights_text = st.session_state.insights
-                insights_text = insights_text.replace("\r\n", "<br><br>").replace("\n", "<br><br>")  # More space
-
-                #  Bold key terms (simple example - you can improve this)
-                for word in ["Sales", "Customer churn rate", "region", "Implication", "customers","support"]: # add the words
-                  insights_text = insights_text.replace(word, f"**{word}**")
-
-
-                insights_html = f"""
-                <div style='
-                    height: {st.session_state.powerbi_height}px;
-                    overflow-y: auto;
-                    border: 1px solid #e0e0e0;
-                    padding: 10px;
-                    border-radius: 5px;
-                    white-space: pre-wrap;
-                '>
-                    {insights_text}
-                </div>
-                """
-                st.markdown(insights_html, unsafe_allow_html=True)
-            else:
-                st.info("Upload data and click 'Submit & Process'.")
-
+            render_insights()
+    
+    # Chat area
     chat_container = st.container()
     with chat_container:
-        st.subheader("Chat with your Data")
-        chat_chain = get_conversational_chain(CHAT_PROMPT)
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-        if prompt := st.chat_input("Ask a question:", key="chat_input"):
-            if not uploaded_files:
-                st.warning("Please upload files first.")
-            else:
-                user_input(prompt, chat_chain, get_dataframe_txt(uploaded_files))
-                st.rerun()  # Rerun to display the processing message immediately
-
+        render_chat(uploaded_files)
+    
+    # Process button handler
     if process_button:
         if not uploaded_files:
             st.warning("Please upload at least one file.")
