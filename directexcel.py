@@ -118,7 +118,7 @@ def get_dataframe_txt(data_files):
 def get_conversational_chain(prompt_template):
     """Creates a Langchain conversational chain."""
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.5, streaming=True)
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.5, streaming=True)
     llm_chain = LLMChain(llm=model, prompt=prompt)
     return llm_chain
 
@@ -126,7 +126,7 @@ def get_conversational_chain(prompt_template):
 def generate_insights(data):
     """Generates insights using the INSIGHTS_PROMPT."""
     prompt = PromptTemplate(template=INSIGHTS_PROMPT, input_variables=["context"])
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.3, streaming=False)  # Lower temp
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.3, streaming=False)  # Lower temp
     llm_chain = LLMChain(llm=model, prompt=prompt)
     response = llm_chain({"context": data}, return_only_outputs=True)
     return response["text"]
