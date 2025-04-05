@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Configuration and Prompts ---
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("AIzaSyAX5kPEq1MUC-u7GfYy1b3tdAACeghfEfM"))
 
 INSIGHTS_PROMPT = """
 You are a seasoned business intelligence analyst. Your role is to extract actionable insights from data. I will upload a CSV or Excel file. You must think step-by-step to identify valuable business insights, but your final output should ONLY be a numbered list of 5-8 key insights that could be valuable for business decision-making.
